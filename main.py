@@ -1,137 +1,89 @@
-# C:\CI.HW1\main.py
-
 import random
-import math
+import math # math library is allowed for basic math operations like exp
 from mlp_model.mlp import MLP
-from utils.data_preprocessing import load_data_pat, normalize_data
-from utils.metrics import predict_class, calculate_confusion_matrix, calculate_accuracy
+from utils.data_preprocessing import load_data, normalize_data, denormalize_data, split_data
+from utils.metrics import calculate_mse
 
-def k_fold_split(X, y, k=10, random_seed=None):
-    if len(X) != len(y):
-        raise ValueError("X and y must have the same number of samples.")
-
-    if random_seed is not None:
-        random.seed(random_seed)
-
-    combined = list(zip(X, y))
-    random.shuffle(combined)
-
-    fold_size = len(combined) // k
-    folds = []
-    for i in range(k):
-        test_start = i * fold_size
-        test_end = test_start + fold_size
-        
-        test_fold = combined[test_start:test_end]
-        train_fold = combined[:test_start] + combined[test_end:]
-        
-        X_train_fold, y_train_fold = zip(*train_fold)
-        X_test_fold, y_test_fold = zip(*test_fold)
-        
-        folds.append({
-            'X_train': list(X_train_fold),
-            'y_train': list(y_train_fold),
-            'X_test': list(X_test_fold),
-            'y_test': list(y_test_fold)
-        })
-    return folds
-
-def run_experiment(hidden_size, learning_rate, momentum, init_seed, k_folds=10):
-    print(f"\n--- Running Experiment: Hidden={hidden_size}, LR={learning_rate}, Momentum={momentum}, Seed={init_seed} ---")
+def main():
+    # --- Configuration Parameters ---
+    file_path = 'data/flood_data.csv'
     
-    file_path = 'data/cross.pat'
+    # MLP Model Hyperparameters
+    input_size = 8  # S1_t-3 to S2_t-0
+    hidden_size = 10 # You can adjust this
+    output_size = 1 # T_plus_7
+    learning_rate = 0.01
+    epochs = 10000
     
+    # --- 1. Load Data ---
+    print(f"Loading data from {file_path}...")
     try:
-        X_raw, y_raw = load_data_pat(file_path)
-        print("Data loaded successfully from cross.pat.")
+        data = load_data(file_path)
+        print("Data loaded successfully.")
     except Exception as e:
-        print(f"Error loading data: {e}. Skipping experiment.")
+        print(f"Error: {e}")
+        print("Failed to load data. Exiting.")
         return
 
-    X_normalized, x_min_vals, x_max_vals = normalize_data(X_raw)
-    y_normalized, y_min_vals, y_max_vals = normalize_data(y_raw)
+    # Separate input features (X) and target output (y)
+    # X contains all columns except the last one (S1_t-3 to S2_t-0)
+    # y is the last column (T_plus_7), reshaped to be a list of lists (for consistency as a 1x1 matrix)
+    X = [row[:-1] for row in data]
+    y = [[row[-1]] for row in data] # Keep y as list of lists (e.g., [[val1], [val2]])
 
-    input_size = len(X_normalized[0])
-    output_size = len(y_normalized[0])
+    # --- 2. Normalize Data ---
+    # Normalize X and y separately using Min-Max Scaling
+    print("Normalizing input data...")
+    X_normalized, x_min_vals, x_max_vals = normalize_data(X)
+    print("Input data normalized.")
 
-    all_fold_accuracies = []
-    all_fold_confusion_matrices = []
-
-    folds = k_fold_split(X_normalized, y_normalized, k=k_folds, random_seed=42)
-
-    for i, fold in enumerate(folds):
-        print(f"  --- Running Fold {i+1}/{k_folds} ---")
-        
-        random.seed(init_seed + i)
-        
-        mlp = MLP(input_size, hidden_size, output_size, momentum=momentum)
-        
-        epochs = 5000
-        
-        mlp.train(fold['X_train'], fold['y_train'], fold['X_test'], fold['y_test'], learning_rate, epochs) 
-        
-        y_test_pred_probs = []
-        for sample_x_test in fold['X_test']:
-            y_test_pred_probs.append(mlp.forward(sample_x_test)[0][0])
-
-        y_test_true_flat = [val[0] for val in fold['y_test']]
-
-        y_test_pred_classes = predict_class(y_test_pred_probs, threshold=0.5)
-
-        fold_accuracy = calculate_accuracy(y_test_true_flat, y_test_pred_classes)
-        all_fold_accuracies.append(fold_accuracy)
-
-        fold_cm = calculate_confusion_matrix(y_test_true_flat, y_test_pred_classes)
-        all_fold_confusion_matrices.append(fold_cm)
-
-        print(f"    Fold {i+1} Test Accuracy: {fold_accuracy:.4f}")
-        print(f"    Fold {i+1} Confusion Matrix: TP={fold_cm['TP']}, TN={fold_cm['TN']}, FP={fold_cm['FP']}, FN={fold_cm['FN']}")
-
-    avg_accuracy = sum(all_fold_accuracies) / len(all_fold_accuracies)
-
-    avg_cm = {'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0}
-    for cm in all_fold_confusion_matrices:
-        avg_cm['TP'] += cm['TP']
-        avg_cm['TN'] += cm['TN']
-        avg_cm['FP'] += cm['FP']
-        avg_cm['FN'] += cm['FN']
+    print("Normalizing target output data...")
+    y_normalized, y_min_vals, y_max_vals = normalize_data(y)
+    print("Target output data normalized.")
     
-    print(f"\n--- Experiment Summary (Hidden={hidden_size}, LR={learning_rate}, Momentum={momentum}, Seed={init_seed}) ---")
-    print(f"  Average Test Accuracy across {k_folds} folds: {avg_accuracy:.4f}")
-    print(f"  Total Confusion Matrix across {k_folds} folds: TP={avg_cm['TP']}, TN={avg_cm['TN']}, FP={avg_cm['FP']}, FN={avg_cm['FN']}")
+    # Store min/max values for denormalization
+    # Since y is a list of 1-element lists, y_min_vals/y_max_vals will be a list of 1 element.
+    # We extract the single float value from them.
+    y_min_max = (y_min_vals[0], y_max_vals[0]) 
 
-    return avg_accuracy, avg_cm, all_fold_accuracies
+    # --- 3. Split Data into Training, Validation, and Test Sets ---
+    print("Splitting data into training, validation, and test sets...")
+    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X_normalized, y_normalized, test_size=0.15, val_size=0.15, random_seed=42)
+    print(f"Data split: Train={len(X_train)} samples, Validation={len(X_val)} samples, Test={len(X_test)} samples.")
+
+    # --- 4. Initialize and Train the MLP Model ---
+    print("Initializing MLP model...")
+    mlp = MLP(input_size, hidden_size, output_size)
+    print(f"MLP model initialized with {input_size} input, {hidden_size} hidden, {output_size} output layers.")
+
+    print("Starting training...")
+    train_losses, val_losses = mlp.train(X_train, y_train, X_val, y_val, learning_rate, epochs)
+    print("Training complete.")
+
+    # --- 5. Evaluate the Model on Test Set ---
+    print("Evaluating model on test set...")
+    
+    # Make predictions on the normalized test set
+    # mlp.forward returns [[float_value]]. We want to flatten it to [float_value] before denormalization.
+    y_pred_normalized_flat = [mlp.forward(sample)[0][0] for sample in X_test]
+
+    # Denormalize predictions back to original scale
+    # denormalize_data now accepts and returns flat lists if given flat lists.
+    y_pred_original = denormalize_data(y_pred_normalized_flat, y_min_max[0], y_min_max[1])
+    
+    # Flatten y_test (which is list of 1-element lists) to a simple list for denormalization
+    y_test_flat_normalized = [val[0] for val in y_test]
+    y_test_original = denormalize_data(y_test_flat_normalized, y_min_max[0], y_min_max[1])
+
+    # Calculate Mean Squared Error (MSE)
+    # Both y_test_original and y_pred_original should now be flat lists of floats.
+    mse = calculate_mse(y_test_original, y_pred_original)
+    print(f"Mean Squared Error (MSE) on test set: {mse:.4f}")
+
+    # Print first few actual vs. predicted values
+    print("\nFirst 10 Actual vs. Predicted values (on original scale):")
+    for i in range(min(10, len(y_test_original))):
+        print(f"Actual: {y_test_original[i]:.2f}, Predicted: {y_pred_original[i]:.2f}")
 
 if __name__ == "__main__":
-    hidden_sizes = [2, 5, 8]
-    learning_rates = [0.01, 0.05, 0.1]
-    momentums = [0.0, 0.5, 0.9]
-    initialization_seeds = [10, 20, 30] 
-
-    results = []
-    for hs in hidden_sizes:
-        for lr in learning_rates:
-            for mom in momentums:
-                for seed in initialization_seeds:
-                    avg_acc, avg_cm, fold_accs = run_experiment(hs, lr, mom, seed)
-                    results.append({
-                        'hidden_size': hs,
-                        'learning_rate': lr,
-                        'momentum': mom,
-                        'init_seed': seed,
-                        'avg_accuracy': avg_acc,
-                        'total_confusion_matrix': avg_cm
-                    })
-
-    print("\n--- All Experiment Results Summary ---")
-    for res in results:
-        print(f"Config: H={res['hidden_size']}, LR={res['learning_rate']:.3f}, Mom={res['momentum']:.1f}, Seed={res['init_seed']} -> Avg Acc: {res['avg_accuracy']:.4f}, CM: {res['total_confusion_matrix']}")
-
-    best_result = max(results, key=lambda x: x['avg_accuracy'])
-    print(f"\nBEST CONFIGURATION: ")
-    print(f"  Hidden Size: {best_result['hidden_size']}")
-    print(f"  Learning Rate: {best_result['learning_rate']:.3f}")
-    print(f"  Momentum: {best_result['momentum']:.1f}")
-    print(f"  Initialization Seed: {best_result['init_seed']}")
-    print(f"  Average Accuracy: {best_result['avg_accuracy']:.4f}")
-    print(f"  Total Confusion Matrix: {best_result['total_confusion_matrix']}")
+    main()
